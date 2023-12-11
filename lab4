@@ -1,0 +1,91 @@
+from pyspark.sql import SparkSession
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.classification import KNNClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("KNN_Titanic").getOrCreate()
+
+# Load the data
+train_data = spark.read.csv("path/to/train.csv", header=True, inferSchema=True)
+
+# Data preprocessing
+# Assuming you have features named 'feature1', 'feature2', ..., 'featureN'
+feature_cols = ['feature1', 'feature2', ..., 'featureN']
+assembler = VectorAssembler(inputCols=feature_cols, outputCol='features')
+train_data = assembler.transform(train_data)
+
+# Standard Scaler
+for col in feature_cols:
+    mean_val = train_data.agg({col: 'mean'}).collect()[0][0]
+    std_val = train_data.agg({col: 'stddev'}).collect()[0][0]
+    train_data = train_data.withColumn(col + '_scaled', (train_data[col] - mean_val) / std_val)
+
+# Select only the scaled features for KNN
+scaled_feature_cols = [col + '_scaled' for col in feature_cols]
+assembler_scaled = VectorAssembler(inputCols=scaled_feature_cols, outputCol='scaled_features')
+train_data = assembler_scaled.transform(train_data)
+
+# Split the data into training and testing sets
+train_set, test_set = train_data.randomSplit([0.8, 0.2], seed=42)
+
+# Build KNN model
+knn = KNNClassifier(featuresCol='scaled_features', labelCol='label', k=5)
+model = knn.fit(train_set)
+
+# Evaluate the model
+predictions = model.transform(test_set)
+evaluator = MulticlassClassificationEvaluator(labelCol='label', metricName='accuracy')
+accuracy = evaluator.evaluate(predictions)
+
+# Determine the K value and create a visualization of the accuracy
+k_values = [3, 5, 7, 9, 11]
+accuracy_values = []
+
+for k in k_values:
+    knn = KNNClassifier(featuresCol='scaled_features', labelCol='label', k=k)
+    model = knn.fit(train_set)
+    predictions = model.transform(test_set)
+    accuracy = evaluator.evaluate(predictions)
+    accuracy_values.append(accuracy)
+
+best_k = k_values[np.argmax(accuracy_values)]
+
+# Run 5-fold cross-validation
+param_grid = ParamGridBuilder().addGrid(knn.k, k_values).build()
+crossval = CrossValidator(estimator=knn,
+                          estimatorParamMaps=param_grid,
+                          evaluator=evaluator,
+                          numFolds=5)
+
+cv_model = crossval.fit(train_set)
+cv_accuracy = cv_model.avgMetrics
+
+# Evaluate using confusion matrix
+tp = predictions.filter("prediction = 1 AND label = 1").count()
+tn = predictions.filter("prediction = 0 AND label = 0").count()
+fp = predictions.filter("prediction = 1 AND label = 0").count()
+fn = predictions.filter("prediction = 0 AND label = 1").count()
+
+confusion_matrix = [[tn, fp], [fn, tp]]
+
+# Markdown cell to explain the accuracy
+"""
+### Model Accuracy Explanation
+
+The KNN classifier was trained on the Titanic dataset using the provided training data. The dataset was preprocessed by standardizing the features using a custom standard scaler implemented from scratch. The scaled features were then used to train the KNN model.
+
+The model was evaluated on a test set, and the accuracy was determined. Additionally, a K value was selected based on the maximum accuracy obtained during K value tuning.
+
+The 5-fold cross-validation results in a mean accuracy of {np.mean(cv_accuracy):.4f} with a standard deviation of {np.std(cv_accuracy):.4f}.
+
+The confusion matrix provides insights into the model's performance on different classes, allowing a more detailed analysis of true positives, true negatives, false positives, and false negatives.
+
+Best K value for the model: {best_k}
+"""
+
+# Cleanup
+spark.stop()
